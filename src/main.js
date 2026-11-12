@@ -8,10 +8,32 @@
   const hudEl = document.getElementById('hud'), errEl = document.getElementById('err'), titleEl = document.getElementById('title');
   function fail(msg) { errEl.style.display = 'flex'; errEl.textContent = msg; throw new Error(msg); }
 
+  // Friendly full-screen notice for devices the renderer can't run on.
+  function unsupported(heading, detail) {
+    const el = document.getElementById('nosup');
+    el.querySelector('h1').textContent = heading;
+    el.querySelector('p').textContent = detail;
+    el.style.display = 'flex';
+    canvas.style.display = hudEl.style.display = titleEl.style.display = 'none';
+  }
+  const ua = navigator.userAgent || '';
+  const isMobile = (navigator.userAgentData && navigator.userAgentData.mobile) ||
+    /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle|Opera Mini|IEMobile/i.test(ua) ||
+    (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);   // iPadOS reports itself as a Mac
+  if (isMobile) {
+    unsupported('Not available on mobile', 'This demo runs a full deferred renderer with 55 dynamic lights and needs a desktop or laptop GPU. Please open it on a computer.');
+    return;
+  }
+
   const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, powerPreference: 'high-performance' });
   if (!gl) fail('WebGL2 is not available in this browser.');
   if (!gl.getExtension('EXT_color_buffer_float')) fail('EXT_color_buffer_float is required (HDR render targets).');
   gl.getExtension('OES_texture_float_linear');
+  // The lighting shader carries every light as uniforms; some GPUs/drivers cap these too low.
+  if (gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS) < MAX_LIGHTS * 4 + NUM_SHADOWS * 4 + 32) {
+    unsupported('Graphics hardware not supported', "This device's GPU does not expose enough shader resources for the demo's lighting. Please try a desktop or laptop with a dedicated or recent integrated GPU.");
+    return;
+  }
 
   let P, world, sea;
   try {

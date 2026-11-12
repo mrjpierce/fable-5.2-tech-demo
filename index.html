@@ -15,6 +15,12 @@
   #title small { display: block; font-size: 10px; letter-spacing: .3em; opacity: .55; margin-top: 4px; }
   #err { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; color: #f88; background: #000;
          font: 13px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; padding: 40px; }
+  #nosup { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+           padding: 32px; box-sizing: border-box; color: #dfe4e8; font-family: "Segoe UI", system-ui, sans-serif;
+           background: radial-gradient(ellipse at 50% 35%, #1a2530 0%, #070a0d 70%); }
+  #nosup .tag { font-size: 11px; letter-spacing: .42em; text-transform: uppercase; opacity: .55; margin-bottom: 28px; }
+  #nosup h1 { font-weight: 300; font-size: 24px; letter-spacing: .04em; margin: 0 0 14px; }
+  #nosup p { max-width: 34em; margin: 0; font-size: 14px; line-height: 1.6; opacity: .7; }
 </style>
 </head>
 <body>
@@ -22,11 +28,12 @@
 <div id="title">Night Shift<small>procedural · from-scratch WebGL2 engine</small></div>
 <div id="hud"></div>
 <div id="err"></div>
-<script src="src/math.js?v=5"></script>
-<script src="src/glutil.js?v=5"></script>
-<script src="src/mesh.js?v=5"></script>
-<script src="src/shaders.js?v=5"></script>
-<script src="src/world.js?v=5"></script>
-<script src="src/main.js?v=5"></script>
+<div id="nosup"><div class="tag">Night Shift</div><h1></h1><p></p></div>
+<script src="src/math.js?v=6"></script>
+<script src="src/glutil.js?v=6"></script>
+<script src="src/mesh.js?v=6"></script>
+<script src="src/shaders.js?v=6"></script>
+<script src="src/world.js?v=6"></script>
+<script src="src/main.js?v=7"></script>
 </body>
 </html>
