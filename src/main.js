@@ -16,22 +16,17 @@
     el.style.display = 'flex';
     canvas.style.display = hudEl.style.display = titleEl.style.display = 'none';
   }
-  const ua = navigator.userAgent || '';
-  const isMobile = (navigator.userAgentData && navigator.userAgentData.mobile) ||
-    /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle|Opera Mini|IEMobile/i.test(ua) ||
-    (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);   // iPadOS reports itself as a Mac
-  if (isMobile) {
-    unsupported('Not available on mobile', 'This demo runs a full deferred renderer with 55 dynamic lights and needs a desktop or laptop GPU. Please open it on a computer.');
-    return;
-  }
-
   const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, powerPreference: 'high-performance' });
-  if (!gl) fail('WebGL2 is not available in this browser.');
-  if (!gl.getExtension('EXT_color_buffer_float')) fail('EXT_color_buffer_float is required (HDR render targets).');
+  if (!gl) { unsupported('WebGL2 not available', 'This browser or device does not support WebGL2, which the demo needs to render.'); return; }
+  if (!gl.getExtension('EXT_color_buffer_float') && !gl.getExtension('EXT_color_buffer_half_float')) {
+    unsupported('Graphics hardware not supported', 'This device cannot render to HDR (floating point) targets, which the demo needs.'); return;
+  }
   gl.getExtension('OES_texture_float_linear');
-  // The lighting shader carries every light as uniforms; some GPUs/drivers cap these too low.
+  // Every light is carried as shader uniforms. If the GPU caps these below what the
+  // current tier needs, drop to the mobile tier; if even that does not fit, give up politely.
   if (gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS) < MAX_LIGHTS * 4 + NUM_SHADOWS * 4 + 32) {
-    unsupported('Graphics hardware not supported', "This device's GPU does not expose enough shader resources for the demo's lighting. Please try a desktop or laptop with a dedicated or recent integrated GPU.");
+    if (!QUALITY.mobile) { const u = new URL(location.href); u.searchParams.set('q', 'mobile'); location.replace(u); return; }
+    unsupported('Graphics hardware not supported', 'The GPU on this device does not expose enough shader resources for the lighting in this demo.');
     return;
   }
 
@@ -59,7 +54,6 @@
   const emptyVAO = gl.createVertexArray();
   const IDENT = M4.ident();
   const lights = world.lights;
-  if (lights.length > MAX_LIGHTS) console.warn('too many lights', lights.length);
 
   // ---- shadow map array ----
   const shadowTex = gl.createTexture();
@@ -83,7 +77,7 @@
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
   // ---- rain instances ----
-  const RAIN_N = 70000;
+  const RAIN_N = QUALITY.rain;
   const rainVAO = gl.createVertexArray();
   {
     const r = mulberry32(99), seeds = new Float32Array(RAIN_N * 4);
@@ -134,7 +128,7 @@
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const cw = Math.max(2, Math.floor(canvas.clientWidth * dpr)), ch = Math.max(2, Math.floor(canvas.clientHeight * dpr));
     if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; force = true; }
-    const cap = Math.min(1, Math.sqrt(2.8e6 / (cw * ch)));
+    const cap = Math.min(1, Math.sqrt(QUALITY.pixels / (cw * ch)));
     const w = Math.max(2, Math.floor(cw * scale * cap)), h = Math.max(2, Math.floor(ch * scale * cap));
     if (force || w !== W || h !== H) { W = w; H = h; allocTargets(); }
   }
@@ -142,12 +136,24 @@
   // ---- lights -> uniform arrays ----
   const LP = new Float32Array(MAX_LIGHTS * 4), LC = new Float32Array(MAX_LIGHTS * 4), LD = new Float32Array(MAX_LIGHTS * 4), LE = new Float32Array(MAX_LIGHTS * 4);
   const shadowMats = new Float32Array(NUM_SHADOWS * 16);
-  let shadowList = [];
+  let shadowList = [], active = lights;
   function packLights(camPos) {
-    for (const L of lights) L.layer = -1;
-    const fixed = lights.filter(L => L.shadow && L.fixed);
-    const cands = lights.filter(L => L.shadow && !L.fixed).sort((a, b) => V3.dist(a.pos, camPos) - V3.dist(b.pos, camPos));
-    shadowList = fixed.concat(cands).slice(0, NUM_SHADOWS);
+    // Rank lights by how much they matter from here; keep the best MAX_LIGHTS.
+    // Lights already in the set get a bonus so the selection does not flip-flop.
+    for (const L of lights) {
+      const dx = L.pos[0] - camPos[0], dy = L.pos[1] - camPos[1], dz = L.pos[2] - camPos[2], r2 = L.range * L.range;
+      L.score = Math.sqrt(L.intensity) * r2 / (dx * dx + dy * dy + dz * dz + r2) * (L.sel ? 1.3 : 1);
+      L.layer = -1;
+    }
+    if (lights.length > MAX_LIGHTS) {
+      active = lights.slice().sort((a, b) => b.score - a.score).slice(0, MAX_LIGHTS);
+      for (const L of lights) L.sel = false;
+      for (const L of active) L.sel = true;
+    }
+    const casters = active.filter(L => L.shadow);
+    if (casters.length > NUM_SHADOWS && QUALITY.mobile) casters.sort((a, b) => b.score - a.score);
+    else casters.sort((a, b) => (b.fixed - a.fixed) || (V3.dist(a.pos, camPos) - V3.dist(b.pos, camPos)));
+    shadowList = casters.slice(0, NUM_SHADOWS);
     shadowList.forEach((L, i) => {
       L.layer = i;
       const fov = Math.min(2 * L.outer + 6, 140) * DEG;
@@ -156,9 +162,9 @@
       L.vp = M4.mul(M4.perspective(fov, 1, L.fixed ? 1.0 : 0.3, L.range), view);
       shadowMats.set(L.vp, i * 16);
     });
-    const n = Math.min(lights.length, MAX_LIGHTS);
+    const n = active.length;
     for (let i = 0; i < n; i++) {
-      const L = lights[i], k = L.intensity * L.mod, j = i * 4;
+      const L = active[i], k = L.intensity * L.mod, j = i * 4;
       LP[j] = L.pos[0]; LP[j + 1] = L.pos[1]; LP[j + 2] = L.pos[2]; LP[j + 3] = L.range;
       LC[j] = L.color[0] * k; LC[j + 1] = L.color[1] * k; LC[j + 2] = L.color[2] * k; LC[j + 3] = L.layer;
       if (L.dir) { LD[j] = L.dir[0]; LD[j + 1] = L.dir[1]; LD[j + 2] = L.dir[2]; LD[j + 3] = Math.cos(L.outer * DEG); LE[j + 1] = Math.cos(L.inner * DEG); }
@@ -236,12 +242,28 @@
     cam.mode = 'free';
     cam.yaw = Math.atan2(cam.dir[2], cam.dir[0]); cam.pitch = Math.asin(clamp(cam.dir[1], -1, 1));
   }
-  let dragging = false;
-  canvas.addEventListener('pointerdown', e => { dragging = true; canvas.setPointerCapture(e.pointerId); goFree(); startAudio(); });
-  canvas.addEventListener('pointerup', () => { dragging = false; });
+  // Drag to look (mouse or touch). A quick tap on a touch screen jumps to the next shot.
+  let drag = null;
+  canvas.addEventListener('pointerdown', e => {
+    drag = { x: e.clientX, y: e.clientY, moved: 0, t: performance.now() };
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+    startAudio();
+  });
+  canvas.addEventListener('pointerup', e => {
+    if (drag && drag.moved < 8 && performance.now() - drag.t < 350 && e.pointerType !== 'mouse') {
+      cam.mode = 'cine'; cam.shot = (cam.shot + 1) % shots.length; cam.shotT = 0;
+    }
+    drag = null;
+  });
+  canvas.addEventListener('pointercancel', () => { drag = null; });
   canvas.addEventListener('pointermove', e => {
-    if (!dragging) return;
-    cam.yaw += e.movementX * 0.0032; cam.pitch = clamp(cam.pitch - e.movementY * 0.0032, -1.5, 1.5);
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    drag.x = e.clientX; drag.y = e.clientY; drag.moved += Math.abs(dx) + Math.abs(dy);
+    if (drag.moved < 8) return;
+    goFree();
+    const k = e.pointerType === 'mouse' ? 0.0032 : 0.005;
+    cam.yaw += dx * k; cam.pitch = clamp(cam.pitch - dy * k, -1.5, 1.5);
   });
   canvas.addEventListener('wheel', e => { goFree(); cam.fov = clamp(cam.fov + Math.sign(e.deltaY) * 3, 18, 95); e.preventDefault(); }, { passive: false });
   window.addEventListener('keydown', e => {
@@ -316,7 +338,9 @@
     if (time > flash.next) triggerFlash();
     const fl = flashValue(time);
 
-    const camPos = cam.pos, fovR = cam.fov * DEG;
+    // On portrait screens widen the vertical FOV so the framing keeps its horizontal coverage.
+    const aspect = W / H, camPos = cam.pos;
+    const fovR = aspect >= 0.72 ? cam.fov * DEG : Math.min(2 * Math.atan(Math.tan(cam.fov * DEG / 2) * 0.72 / aspect), 78 * DEG);
     const view = M4.lookAt(camPos, V3.add(camPos, cam.dir), [0, 1, 0]);
     const proj = M4.perspective(fovR, W / H, NEAR, FAR);
     const VP = M4.mul(proj, view), invVP = M4.invert(VP), invProj = M4.invert(proj);
@@ -423,9 +447,9 @@
       if (autoScale && --cooldown < 0 && ema > 27 && scale > 0.5) { scale = Math.max(0.5, scale * 0.85); cooldown = 90; ema = 18; resize(true); }
     }
     if (frames % 20 === 0) {
-      fpsText = (1000 / ema).toFixed(0) + ' fps · ' + W + '×' + H + ' · ' + lights.length + ' lights';
+      fpsText = (1000 / ema).toFixed(0) + ' fps · ' + W + '×' + H + ' · ' + active.length + '/' + lights.length + ' lights';
       hudEl.textContent = (cam.mode === 'cine' ? 'CINEMATIC  shot ' + (cam.shot + 1) + '/' + shots.length : 'FREE CAMERA') + '   ' + fpsText +
-        '\ndrag look · WASD/QE fly · shift fast · wheel zoom · 1-7 shots · C cinematic · L lightning · M sound · [ ] resolution · H hide';
+        (QUALITY.mobile ? '\ndrag to look · tap for next shot' : '\ndrag look · WASD/QE fly · shift fast · wheel zoom · 1-7 shots · C cinematic · L lightning · M sound · [ ] resolution · H hide');
     }
     if (frames === 300) titleEl.style.opacity = 0;
     requestAnimationFrame(loop);

@@ -2,10 +2,25 @@
 // ---------------------------------------------------------------------------
 // All GLSL for the renderer
 // ---------------------------------------------------------------------------
-const MAX_LIGHTS = 64;
-const NUM_SHADOWS = 8;
+// Quality tier. Phones and tablets get a lighter pipeline: fewer simultaneous lights
+// (mobile GPUs cap fragment uniforms at ~256 vectors), fewer/smaller shadow maps,
+// shorter reflection and scattering loops, fewer rain streaks and a lower pixel budget.
+// Override with ?q=mobile or ?q=desktop.
+const QUALITY = (() => {
+  const ua = navigator.userAgent || '';
+  const q = new URLSearchParams(location.search).get('q');
+  const detected = !!(navigator.userAgentData && navigator.userAgentData.mobile) ||
+    /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle|Opera Mini|IEMobile/i.test(ua) ||
+    (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);   // iPadOS reports itself as a Mac
+  const mobile = q ? q === 'mobile' : detected;
+  return mobile
+    ? { name: 'mobile', mobile: true, maxLights: 20, shadows: 3, shadowRes: 512, ssrSteps: 26, ssrGrow: 1.19, volSamples: 3, rain: 16000, pixels: 0.65e6 }
+    : { name: 'desktop', mobile: false, maxLights: 64, shadows: 8, shadowRes: 1024, ssrSteps: 64, ssrGrow: 1.085, volSamples: 6, rain: 70000, pixels: 2.8e6 };
+})();
+const MAX_LIGHTS = QUALITY.maxLights;
+const NUM_SHADOWS = QUALITY.shadows;
 const NUM_WAVES = 8;
-const SHADOW_RES = 1024;
+const SHADOW_RES = QUALITY.shadowRes;
 
 const GLSL_HDR = `#version 300 es
 precision highp float;
@@ -387,7 +402,7 @@ void main(){
   vec3 O = P + N * (0.015 + depthP * 0.0025);
   float t = stepLen * (0.35 + jitter), tPrev = 0.0;
   bool hit = false; vec2 huv = vec2(0.0);
-  for (int i = 0; i < 64; i++){
+  for (int i = 0; i < ${QUALITY.ssrSteps}; i++){
     vec3 q = O + R * t;
     if (q.z > -uNF.x) break;
     vec4 c = uProj * vec4(q, 1.0); vec2 uv = c.xy / c.w * 0.5 + 0.5;
@@ -403,7 +418,7 @@ void main(){
       vec3 qh = O + R * b; vec4 ch = uProj * vec4(qh, 1.0);
       huv = ch.xy / ch.w * 0.5 + 0.5; hit = true; break;
     }
-    tPrev = t; stepLen *= 1.085; t += stepLen;
+    tPrev = t; stepLen *= ${QUALITY.ssrGrow.toFixed(3)}; t += stepLen;
   }
   vec3 col = fallback;
   if (hit) {
@@ -419,7 +434,7 @@ const VOL_FS = GLSL_HDR + GLSL_COMMON + GLSL_LIGHTS + `
 in vec2 vUV; out vec4 o;
 uniform sampler2D uDepth; uniform mat4 uInvVP; uniform vec3 uCam;
 uniform float uScatter, uExt, uDockY;
-#define NS 6
+#define NS ${QUALITY.volSamples}
 void main(){
   float z = texture(uDepth, vUV).r;
   vec4 wp = uInvVP * vec4(vec3(vUV, min(z, 0.99999)) * 2.0 - 1.0, 1.0); vec3 P = wp.xyz / wp.w;
